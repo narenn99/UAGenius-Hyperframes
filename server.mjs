@@ -536,9 +536,9 @@ async function generateVideo(prompt, flow = "leaderboard") {
     }
   }
 
-  const totalFrames = 240;
+  const totalFrames = 120;
   for (let frame = 0; frame < totalFrames; frame += 1) {
-    const svg = renderSpecSvg(renderSpec, frame);
+    const svg = renderSpecSvg(renderSpec, frame * 2);
     await sharp(Buffer.from(svg))
       .png()
       .toFile(join(frameDir, `frame_${String(frame).padStart(3, "0")}.png`));
@@ -547,11 +547,15 @@ async function generateVideo(prompt, flow = "leaderboard") {
   await runFfmpeg([
     "-y",
     "-framerate",
-    "60",
+    "30",
     "-i",
     join(frameDir, "frame_%03d.png"),
     "-c:v",
     "libx264",
+    "-preset",
+    "ultrafast",
+    "-threads",
+    "1",
     "-pix_fmt",
     "yuv420p",
     "-movflags",
@@ -603,7 +607,7 @@ const server = createServer(async (request, response) => {
     await serveStatic(request, response);
   } catch (error) {
     console.error(error);
-    sendJson(response, 500, { error: error.message || "Something went wrong" });
+    sendJson(response, 500, { error: "Video generation failed. Please try again with a simpler prompt." });
   }
 });
 
