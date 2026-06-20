@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UA Genius Template Picker</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="template-shell">
+      <header class="template-header" id="templateHeader">
+        <div class="header-spacer"></div>
+        <div class="header-copy">
+          <h1>Choose your template</h1>
+          <p>Pick a strategy to start building</p>
+        </div>
+        <button class="close-button" type="button">Close</button>
+      </header>
+
+      <section class="template-grid" id="templateGrid" aria-label="Template options">
+        <article class="template-card">
+          <div>
+            <h2>Build from Scratch</h2>
+            <p>Select every element → hook, gameplay body, transition, end card, text overlay and music → from your library to build a fully custom concept.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Create your own structure</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>Hook Swap</h2>
+            <p>Same gameplay body + end card, swap multiple hooks to find your winner. Transition, text and music use system defaults unless overridden.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Add multiple Hooks</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">Body</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">End card</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>Body Swap (New Game Angle)</h2>
+            <p>Lock a winning hook and test different gameplay body segments. Transition, text and music use system defaults unless overridden.</p>
+          </div>
+          <div class="flow-row">
+            <span class="locked-pill">Hook</span>
+            <span class="arrow">→</span>
+            <span class="action-pill">Add multiple Bodies</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">End card</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>End card Swap</h2>
+            <p>Lock your hook and gameplay body, test different end card CTAs. Transition, text and music use system defaults unless overridden.</p>
+          </div>
+          <div class="flow-row">
+            <span class="locked-pill">Hook</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">Body</span>
+            <span class="arrow">→</span>
+            <span class="action-pill">Add multiple End cards</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>Audio Swap</h2>
+            <p>Keep your full video structure and replace only the audio track across multiple variants. Optionally let AI generate music variations.</p>
+          </div>
+          <div class="flow-row wrap">
+            <span class="locked-pill">Hook</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">Body</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">End card</span>
+            <span class="arrow">→</span>
+            <span class="action-pill">Add multiple Audios</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>Text Overlay</h2>
+            <p>Keep the same video and test N different text styles and copy variants. Optionally let AI generate text variations for you.</p>
+          </div>
+          <div class="flow-row wrap">
+            <span class="locked-pill">Hook</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">Body</span>
+            <span class="arrow">→</span>
+            <span class="action-pill">Add multiple Texts</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">End card</span>
+          </div>
+        </article>
+
+        <article class="template-card">
+          <div>
+            <h2>Transition Style</h2>
+            <p>Keep hook and body identical, only swap the transition style between them.</p>
+          </div>
+          <div class="flow-row wrap">
+            <span class="locked-pill">Hook</span>
+            <span class="arrow">→</span>
+            <span class="action-pill">Add multiple Transitions</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">Body</span>
+            <span class="arrow">→</span>
+            <span class="locked-pill">End card</span>
+          </div>
+        </article>
+
+        <button
+          class="template-card generation-card clickable-card generator-card"
+          type="button"
+          data-flow="leaderboard"
+          data-title="Leaderboard"
+          data-description="Create ranking videos for weekly top players, tournament tables, clan standings, score races, or winner podiums. Add the ranking data in your prompt and get a standalone animated video."
+          data-placeholder="Example: Create a 4-second 9:16 leaderboard video. Title: WEEKLY TOP PLAYERS. Use gold, silver, and bronze accents. Data: 1. ShadowHunter - 15,420 points - AlphaSquad, 2. NightStalker - 12,800 points - BravoTeam, 3. PhoenixRise - 10,100 points - CharlieUnit. Animate rows sliding in, bars growing, scores counting up, and end with CTA: CAN YOU BEAT THEM?"
+          data-help="Leaderboard title and format|Names, scores, ranks, teams, clans, or tournament data|Visual style, motion, colors, and tone|CTA text for the final frame"
+        >
+          <div>
+            <div class="card-kicker">Generate video</div>
+            <h2>Leaderboard</h2>
+            <p>Make animated ranking videos for top players, clans, teams, weekly scores, tournament tables, podiums, or score races.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Prompt</span>
+            <span class="arrow">→</span>
+            <span class="optional-pill">Optional image</span>
+            <span class="arrow">→</span>
+            <span class="video-pill">Video</span>
+          </div>
+        </button>
+
+        <button
+          class="template-card generation-card clickable-card generator-card"
+          type="button"
+          data-flow="stat-card"
+          data-title="Stat Card"
+          data-description="Create comparison videos for weapons, characters, boosters, abilities, power-ups, cards, vehicles, or any game items. Put the item stats in the prompt and generate a standalone stat video."
+          data-placeholder="Example: Create a 4-second 9:16 stat comparison video. Title: POWER-UP SHOWDOWN. Compare Magnet, Shield, and Double Coins. Stats: Magnet duration 18s, coin pull 95, rarity medium; Shield duration 12s, protection 100, rarity rare; Double Coins duration 20s, multiplier 2x, rarity common. Use neon arcade colors, animated stat bars, and CTA: WHICH ONE WOULD YOU PICK?"
+          data-help="Stat card title and comparison angle|Items, powers, characters, cards, or abilities|Stat names and values for each item|Winner/highlight logic and CTA"
+        >
+          <div>
+            <div class="card-kicker">Generate video</div>
+            <h2>Stat Card</h2>
+            <p>Make comparison videos for weapons, characters, boosters, abilities, cards, power-ups, vehicles, or game items.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Prompt</span>
+            <span class="arrow">→</span>
+            <span class="optional-pill">Optional image</span>
+            <span class="arrow">→</span>
+            <span class="video-pill">Video</span>
+          </div>
+        </button>
+
+        <button
+          class="template-card generation-card clickable-card generator-card"
+          type="button"
+          data-flow="event-countdown"
+          data-title="Event Countdown"
+          data-description="Create urgency videos for live events, season endings, flash sales, reward windows, tournaments, limited modes, or double-reward weekends. Describe the event, timer, image style, and CTA."
+          data-placeholder="Example: Create a 4-second 9:16 event countdown video. Event: DOUBLE COINS WEEKEND. Ends in 12 hours. Use bright gold coins, dark purple background, pulsing timer, sparkles, and a big CTA button: CLAIM NOW. Make the animation urgent but playful."
+          data-help="Event name and offer details|End time or countdown copy|Urgency style, color palette, and motion|CTA such as Play Now, Claim Reward, or Join Event"
+        >
+          <div>
+            <div class="card-kicker">Generate video</div>
+            <h2>Event Countdown</h2>
+            <p>Make urgency promos for live events, season endings, flash sales, reward windows, tournaments, and limited-time modes.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Prompt</span>
+            <span class="arrow">→</span>
+            <span class="optional-pill">Optional image</span>
+            <span class="arrow">→</span>
+            <span class="video-pill">Video</span>
+          </div>
+        </button>
+
+        <button
+          class="template-card custom-card clickable-card generator-card"
+          type="button"
+          data-flow="custom-data"
+          data-title="Custom Data-to-Video"
+          data-description="Create a video from any structured game data or campaign idea. Paste JSON, CSV-like text, API output, table data, or plain English instructions, then describe the layout and animation."
+          data-placeholder="Example: Create a 4-second 9:16 video from this game data. Show a timeline of Season 12 milestones: Day 1 New Map, Day 3 Double XP, Day 5 Boss Event, Day 7 Finals. Use a futuristic blue theme, animated timeline nodes, glowing connectors, and CTA: JOIN THE SEASON."
+          data-help="Any structured data or plain-English concept|Preferred layout such as chart, timeline, table, grid, bracket, or cards|Brand/game style, colors, animation, and visual tone|CTA and final frame message"
+        >
+          <div>
+            <div class="card-kicker">Advanced pipeline</div>
+            <h2>Custom Data-to-Video</h2>
+            <p>Turn any game data, campaign table, JSON, API output, timeline, chart idea, or custom prompt into a video.</p>
+          </div>
+          <div class="flow-row">
+            <span class="action-pill">Any prompt</span>
+            <span class="arrow">→</span>
+            <span class="optional-pill">Image</span>
+            <span class="arrow">→</span>
+            <span class="video-pill">MP4</span>
+          </div>
+        </button>
+      </section>
+
+      <section class="prompt-screen is-hidden" id="promptScreen" aria-label="Video prompt">
+        <div class="prompt-header">
+          <button class="back-button" type="button" id="backToTemplates">← Back</button>
+          <div>
+            <div class="card-kicker" id="promptKicker">Generate video</div>
+            <h1 id="promptTitle">Leaderboard</h1>
+            <p id="promptDescription">Describe the video you want. Include data, style, colors, animation, and CTA directly inside the prompt.</p>
+          </div>
+        </div>
+
+        <div class="prompt-layout">
+          <form class="prompt-panel">
+            <label class="field-label" for="videoPrompt">Input prompt</label>
+            <textarea
+              id="videoPrompt"
+              class="prompt-textarea"
+              placeholder="Example: Create a 9:16 animated leaderboard video for a weekly tournament. Use a dark competitive theme with gold accents. Title: WEEKLY TOP PLAYERS. Data: 1. Nova Squad - 15,420 pts, 2. Blaze Clan - 12,800 pts, 3. Pixel Kings - 10,100 pts. Animate bars from left to right, count scores up, and end with CTA: Can you beat them?"
+            ></textarea>
+
+            <div class="upload-block">
+              <div>
+                <label class="field-label" for="videoImage">Upload image <span>optional</span></label>
+                <p>Use game art, a tournament banner, screenshot, or visual reference for colors and styling.</p>
+              </div>
+              <label class="upload-button" for="videoImage">Upload image</label>
+              <input id="videoImage" type="file" accept="image/*" />
+            </div>
+
+            <button class="generate-button" type="button" id="generateVideo">Generate Video</button>
+          </form>
+
+          <aside class="prompt-helper">
+            <h2>What to include</h2>
+            <ul id="promptHelpList">
+              <li>Leaderboard title and format</li>
+              <li>Names, scores, ranks, teams, or tournament data</li>
+              <li>Visual style, motion, colors, and tone</li>
+              <li>CTA text for the final frame</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <section class="loading-screen is-hidden" id="loadingScreen" aria-label="Generating video">
+        <div class="loading-card">
+          <div class="loader-ring" aria-hidden="true"></div>
+          <div class="card-kicker">Rendering</div>
+          <h1>Your video is being generated</h1>
+          <p>We are turning your prompt and optional image into an HTML, CSS, and JavaScript composition, then rendering it into a video. This can take a few minutes.</p>
+        </div>
+      </section>
+
+      <section class="video-screen is-hidden" id="videoScreen" aria-label="Generated video preview">
+        <div class="video-header">
+          <button class="back-button" type="button" id="backToPrompt">← Back</button>
+          <div>
+            <div class="card-kicker">Generated video</div>
+            <h1 id="videoTitle">Video Preview</h1>
+            <p>Your standalone video is ready to play or download.</p>
+          </div>
+        </div>
+
+        <div class="video-card">
+          <video class="result-video" id="resultVideo" src="assets/leaderboard-demo.mp4" controls playsinline></video>
+          <a class="download-button" id="downloadButton" href="assets/leaderboard-demo.mp4" download="leaderboard-video.mp4">Download Video</a>
+        </div>
+      </section>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>
