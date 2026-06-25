@@ -230,6 +230,26 @@
               placeholder="Example: Create a 9:16 animated leaderboard video for a weekly tournament. Use a dark competitive theme with gold accents. Title: WEEKLY TOP PLAYERS. Data: 1. Nova Squad - 15,420 pts, 2. Blaze Clan - 12,800 pts, 3. Pixel Kings - 10,100 pts. Animate bars from left to right, count scores up, and end with CTA: Can you beat them?"
             ></textarea>
 
+            <div class="error-panel is-hidden" id="errorPanel" role="alert">
+              <div class="error-kicker" id="errorStage">Generation issue</div>
+              <h2 id="errorTitle">Video not generated</h2>
+              <p id="errorMessage">Something went wrong while creating the video.</p>
+              <dl class="error-details">
+                <div>
+                  <dt>What to check</dt>
+                  <dd id="errorSuggestion">Try again with a shorter prompt.</dd>
+                </div>
+                <div class="is-hidden" id="errorDetailRow">
+                  <dt>Technical detail</dt>
+                  <dd id="errorDetail"></dd>
+                </div>
+                <div class="is-hidden" id="errorTraceRow">
+                  <dt>Trace ID</dt>
+                  <dd id="errorTrace"></dd>
+                </div>
+              </dl>
+            </div>
+
             <div class="upload-block">
               <div>
                 <label class="field-label" for="videoImage">Upload image <span>optional</span></label>
@@ -259,7 +279,7 @@
           <div class="loader-ring" aria-hidden="true"></div>
           <div class="card-kicker">Rendering</div>
           <h1>Your video is being generated</h1>
-          <p>We are turning your prompt and optional image into an HTML, CSS, and JavaScript composition, then rendering it into a video. This can take a few minutes.</p>
+          <p id="loadingStatus">We are turning your prompt and optional image into an HTML, CSS, and JavaScript composition, then rendering it into a video. This can take a few minutes.</p>
         </div>
       </section>
 

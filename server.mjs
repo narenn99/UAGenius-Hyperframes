@@ -13,7 +13,10 @@ const rootDir = fileURLToPath(new URL(".", import.meta.url));
 const generatedDir = join(rootDir, "assets", "generated");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
-const openAiModel = process.env.OPENAI_MODEL || "gpt-5.2";
+const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1";
+const openAiTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 25_000);
+const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 60_000);
+const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 60_000);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -28,6 +31,60 @@ const mimeTypes = {
 function sendJson(response, status, payload) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+class GenerationError extends Error {
+  constructor(stage, message, options = {}) {
+    super(message);
+    this.name = "GenerationError";
+    this.stage = stage;
+    this.code = options.code || "GENERATION_FAILED";
+    this.detail = options.detail || "";
+    this.suggestion = options.suggestion || "";
+  }
+}
+
+function errorPayload(error, traceId) {
+  const stage = error.stage || "unknown";
+  const suggestions = {
+    openai:
+      "Check OPENAI_API_KEY, OPENAI_MODEL, quota, and model access. The renderer can still use fallback if OpenAI is slow or unavailable.",
+    hyperframes:
+      "Check Chromium/HyperFrames availability and whether the generated HTML violates the composition contract.",
+    ffmpeg:
+      "Check ffmpeg availability, disk space, and whether frame generation completed.",
+    fallback:
+      "Check prompt parsing and SVG frame rendering. Try a shorter prompt or structured ranking data.",
+    request: "Check the prompt payload and try again.",
+    unknown: "Check Railway logs for the trace ID and failing stage.",
+  };
+
+  return {
+    error: {
+      code: error.code || "VIDEO_GENERATION_FAILED",
+      message: error.message || "Video generation failed.",
+      stage,
+      detail: error.detail || "",
+      suggestion: error.suggestion || suggestions[stage] || suggestions.unknown,
+      traceId,
+    },
+  };
+}
+
+function withTimeout(promise, timeoutMs, stage, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new GenerationError(stage, message, {
+          code: "STAGE_TIMEOUT",
+          detail: `${stage} exceeded ${Math.round(timeoutMs / 1000)}s`,
+        }),
+      );
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function readBody(request) {
@@ -75,6 +132,32 @@ function easeOutCubic(x) {
 
 function formatScore(value) {
   return Math.round(value).toLocaleString("en-US");
+}
+
+function splitTextLines(value, maxChars = 22, maxLines = 2) {
+  const words = String(value || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const lines = [];
+
+  for (const word of words) {
+    const current = lines[lines.length - 1] || "";
+    if (!current || `${current} ${word}`.length > maxChars) {
+      if (lines.length < maxLines) lines.push(word);
+      else lines[lines.length - 1] = `${lines[lines.length - 1]} ${word}`;
+    } else {
+      lines[lines.length - 1] = `${current} ${word}`;
+    }
+  }
+
+  return lines.length ? lines : [""];
+}
+
+function svgTextBlock({ lines, x, y, lineHeight, attrs }) {
+  return lines
+    .map((line, index) => `<text x="${x}" y="${y + index * lineHeight}" ${attrs}>${escapeXml(line)}</text>`)
+    .join("");
 }
 
 function compositionHtml({ prompt, data, type }) {
@@ -141,6 +224,7 @@ function normalizeRenderSpec(rawSpec, fallbackData = {}) {
   const primary = normalizeHex(rawTheme.primary, "#00D4FF");
   const secondary = normalizeHex(rawTheme.secondary, "#FFD700");
   const background = normalizeHex(rawTheme.background, "#0a0a0a");
+  const durationSeconds = Number(rawSpec.durationSeconds || fallbackData.durationSeconds || fallbackData.duration || 4);
 
   return {
     kind: rawSpec.kind || (Array.isArray(fallbackData.semifinals) ? "bracket" : "leaderboard"),
@@ -156,7 +240,58 @@ function normalizeRenderSpec(rawSpec, fallbackData = {}) {
     items: Array.isArray(rawSpec.items) ? rawSpec.items : [],
     matches: Array.isArray(rawSpec.matches) ? rawSpec.matches : [],
     final: rawSpec.final || fallbackData.final || {},
+    durationSeconds: Number.isFinite(durationSeconds) ? clamp(durationSeconds, 2, 8) : 4,
   };
+}
+
+function parsePlainTextLeaderboard(prompt) {
+  const text = String(prompt || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  const title = text.match(/\btitle\s*:\s*([^.]*(?:\.[^D])?)/i)?.[1]?.trim().replace(/\s+Data:?$/i, "");
+  const duration = Number(text.match(/(\d+(?:\.\d+)?)\s*-\s*second|\b(\d+(?:\.\d+)?)\s*second/i)?.[1] || text.match(/\b(\d+(?:\.\d+)?)\s*second/i)?.[1] || 4);
+  const cta = text.match(/\bCTA\s*:\s*(.+)$/i)?.[1]?.trim();
+  const dataStart = text.search(/\bData\s*:/i);
+  const afterData = dataStart >= 0 ? text.slice(dataStart).replace(/^Data\s*:\s*/i, "") : text;
+  const dataText = afterData.split(/\bAnimate\b|\bEnd with\b|\bCTA\s*:/i)[0];
+  const rowPattern = /(\d+)\.\s*([A-Za-z0-9][A-Za-z0-9 _.'-]*?)\s*-\s*([\d,]+)\s*([A-Za-z ]+?)?\s*-\s*([^,.;]+)(?=,\s*\d+\.|\.|;|$)/g;
+  const items = [];
+  let match;
+
+  while ((match = rowPattern.exec(dataText))) {
+    items.push({
+      rank: Number(match[1]),
+      name: match[2].trim(),
+      sublabel: match[5].trim(),
+      value: Number(match[3].replaceAll(",", "")),
+      unit: (match[4] || "").trim(),
+    });
+  }
+
+  if (!items.length) return null;
+
+  const fiery = /fire|fiery|ember|battle|medieval|purple|red/i.test(text);
+  return normalizeRenderSpec({
+    kind: "leaderboard",
+    title: title || "WEEKLY TOP CLANS",
+    subtitle: items[0]?.unit ? `Ranked by ${items[0].unit}` : "",
+    cta: cta || "JOIN THE BATTLE",
+    durationSeconds: duration,
+    theme: fiery
+      ? {
+          primary: "#FFD700",
+          secondary: "#FF3B1F",
+          bronze: "#CD7F32",
+          background: "#140014",
+        }
+      : {
+          primary: "#FFD700",
+          secondary: "#C0C0C0",
+          bronze: "#CD7F32",
+          background: "#0a0a0a",
+        },
+    items,
+  });
 }
 
 function fallbackRenderSpec(prompt) {
@@ -200,6 +335,9 @@ function fallbackRenderSpec(prompt) {
     );
   }
 
+  const parsedLeaderboard = parsePlainTextLeaderboard(prompt);
+  if (parsedLeaderboard) return parsedLeaderboard;
+
   return normalizeRenderSpec({
     kind: "leaderboard",
     title: "Generated Game Video",
@@ -238,7 +376,8 @@ Return ONLY valid JSON with this shape:
     "theme": { "primary": "#RRGGBB", "secondary": "#RRGGBB", "background": "#RRGGBB", "bronze": "#RRGGBB" },
     "items": [{ "rank": 1, "name": "string", "sublabel": "string", "value": 12345 }],
     "matches": [{ "label": "SEMIFINAL 1", "teamA": "string", "teamB": "string", "winner": "string" }],
-    "final": { "teamA": "string", "teamB": "string" }
+    "final": { "teamA": "string", "teamB": "string" },
+    "durationSeconds": 4
   }
 }
 
@@ -270,28 +409,47 @@ async function generateCompositionWithOpenAI(prompt, flow) {
     return null;
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: openAiModel,
-      input: buildCompositionPrompt(prompt, flow),
-      max_output_tokens: 6000,
-    }),
-  });
+  let response;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), openAiTimeoutMs);
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: openAiModel,
+        input: buildCompositionPrompt(prompt, flow),
+        max_output_tokens: 6000,
+      }),
+    });
+  } catch (error) {
+    throw new GenerationError("openai", "OpenAI request did not complete.", {
+      code: error.name === "AbortError" ? "OPENAI_TIMEOUT" : "OPENAI_NETWORK_ERROR",
+      detail: error.message,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`OpenAI generation failed: ${errorText}`);
+    throw new GenerationError("openai", "OpenAI generation failed.", {
+      code: "OPENAI_REQUEST_FAILED",
+      detail: errorText.slice(0, 800),
+    });
   }
 
   const json = await response.json();
   const parsed = extractJsonObject(responseText(json));
   if (!parsed.html || !parsed.renderSpec) {
-    throw new Error("OpenAI did not return a valid composition payload");
+    throw new GenerationError("openai", "OpenAI did not return a valid composition payload.", {
+      code: "OPENAI_BAD_PAYLOAD",
+      detail: responseText(json).slice(0, 800),
+    });
   }
 
   return {
@@ -341,6 +499,9 @@ function leaderboardSvg(data, frame) {
   const colors = [theme.primary || "#FFD700", theme.secondary || "#C0C0C0", theme.bronze || "#CD7F32"];
   const maxScore = Math.max(...players.map((player) => Number(player.score) || 1));
   const ctaOpacity = clamp((seconds - 3) / 0.45);
+  const titleLines = splitTextLines((data.title || "WEEKLY TOP PLAYERS").replace(/[.]+$/, ""), 21, 2);
+  const subtitleY = titleLines.length > 1 ? 282 : 248;
+  const ctaLines = splitTextLines(data.cta || "CAN YOU BEAT THEM?", 24, 2);
 
   const rows = players.slice(0, 5).map((player, index) => {
     const start = 0.35 + index * 0.22;
@@ -368,10 +529,22 @@ function leaderboardSvg(data, frame) {
     background: theme.background || "#0a0a0a",
     accent: theme.primary || "#FFD700",
     body: `
-      <text x="540" y="178" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="68" font-weight="900" fill="${escapeXml(theme.primary || "#FFD700")}" filter="url(#glow)">${escapeXml(data.title || "WEEKLY TOP PLAYERS")}</text>
-      <text x="540" y="248" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" fill="${escapeXml(theme.secondary || "#C0C0C0")}">${escapeXml(data.subtitle || "")}</text>
+      ${svgTextBlock({
+        lines: titleLines,
+        x: 540,
+        y: titleLines.length > 1 ? 145 : 178,
+        lineHeight: 64,
+        attrs: `text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="900" fill="${escapeXml(theme.primary || "#FFD700")}" filter="url(#glow)"`,
+      })}
+      <text x="540" y="${subtitleY}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" fill="${escapeXml(theme.secondary || "#C0C0C0")}">${escapeXml(data.subtitle || "")}</text>
       ${rows.join("")}
-      <text x="540" y="1600" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="900" fill="#ffffff" opacity="${ctaOpacity}" filter="url(#glow)">${escapeXml(data.cta || "CAN YOU BEAT THEM?")}</text>
+      ${svgTextBlock({
+        lines: ctaLines,
+        x: 540,
+        y: ctaLines.length > 1 ? 1565 : 1600,
+        lineHeight: 58,
+        attrs: `text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="50" font-weight="900" fill="#ffffff" opacity="${ctaOpacity}" filter="url(#glow)"`,
+      })}
     `,
   });
 }
@@ -442,6 +615,7 @@ function renderSpecToLegacyData(spec) {
         team_b: spec.final?.teamB || spec.final?.team_b,
       },
       cta: spec.cta,
+      durationSeconds: spec.durationSeconds,
     };
   }
 
@@ -456,6 +630,7 @@ function renderSpecToLegacyData(spec) {
       score: Number(item.value || item.score || Math.max(100 - index * 18, 20)),
     })),
     cta: spec.cta,
+    durationSeconds: spec.durationSeconds,
   };
 }
 
@@ -467,14 +642,30 @@ function renderSpecSvg(spec, frame) {
 async function runFfmpeg(args) {
   await new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", args, { cwd: rootDir, stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new GenerationError("ffmpeg", "ffmpeg timed out while encoding the video.", {
+          code: "FFMPEG_TIMEOUT",
+        }),
+      );
+    }, ffmpegTimeoutMs);
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
     child.on("error", reject);
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(stderr || `ffmpeg exited with ${code}`));
+      else {
+        reject(
+          new GenerationError("ffmpeg", "ffmpeg failed while encoding the video.", {
+            code: "FFMPEG_FAILED",
+            detail: stderr.slice(-1000) || `ffmpeg exited with ${code}`,
+          }),
+        );
+      }
     });
   });
 }
@@ -488,14 +679,30 @@ async function runHyperframesRender(jobDir, outputPath) {
 
   await new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: rootDir, stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new GenerationError("hyperframes", "HyperFrames render timed out.", {
+          code: "HYPERFRAMES_TIMEOUT",
+        }),
+      );
+    }, hyperframesTimeoutMs);
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
     child.on("error", reject);
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(stderr || `hyperframes exited with ${code}`));
+      else {
+        reject(
+          new GenerationError("hyperframes", "HyperFrames render failed.", {
+            code: "HYPERFRAMES_FAILED",
+            detail: stderr.slice(-1000) || `hyperframes exited with ${code}`,
+          }),
+        );
+      }
     });
   });
 }
@@ -507,11 +714,18 @@ async function generateVideo(prompt, flow = "leaderboard") {
   await mkdir(frameDir, { recursive: true });
   const fallbackSpec = fallbackRenderSpec(prompt);
   let composition = null;
+  const warnings = [];
 
   try {
     composition = await generateCompositionWithOpenAI(prompt, flow);
   } catch (error) {
-    console.warn(error.message);
+    warnings.push({
+      stage: error.stage || "openai",
+      code: error.code || "OPENAI_FAILED",
+      message: error.message,
+      detail: error.detail || "",
+    });
+    console.warn(`[openai] ${error.message}`);
   }
 
   const renderSpec = composition?.renderSpec || fallbackSpec;
@@ -530,28 +744,45 @@ async function generateVideo(prompt, flow = "leaderboard") {
         compositionUrl: `/assets/generated/${id}/index.html`,
         type,
         renderer: "hyperframes",
+        warnings,
       };
     } catch (error) {
-      console.warn(`HyperFrames render failed, falling back to frame renderer: ${error.message}`);
+      warnings.push({
+        stage: error.stage || "hyperframes",
+        code: error.code || "HYPERFRAMES_FAILED",
+        message: error.message,
+        detail: error.detail || "",
+      });
+      console.warn(`[hyperframes] Falling back to frame renderer: ${error.message}`);
     }
   }
 
-  const totalFrames = 120;
-  for (let frame = 0; frame < totalFrames; frame += 1) {
-    const svg = renderSpecSvg(renderSpec, frame * 2);
-    await sharp(Buffer.from(svg))
-      .png()
-      .toFile(join(frameDir, `frame_${String(frame).padStart(3, "0")}.png`));
+  const frameRate = 30;
+  const totalFrames = Math.round((renderSpec.durationSeconds || 4) * frameRate);
+  const frameNumbers = Array.from({ length: totalFrames }, (_, frame) => frame);
+  const batchSize = Number(process.env.FRAME_RENDER_CONCURRENCY || 6);
+  for (let index = 0; index < frameNumbers.length; index += batchSize) {
+    const batch = frameNumbers.slice(index, index + batchSize);
+    await Promise.all(
+      batch.map(async (frame) => {
+        const svg = renderSpecSvg(renderSpec, frame * 2);
+        await sharp(Buffer.from(svg))
+          .png()
+          .toFile(join(frameDir, `frame_${String(frame).padStart(3, "0")}.png`));
+      }),
+    );
   }
 
   await runFfmpeg([
     "-y",
     "-framerate",
-    "30",
+    String(frameRate),
     "-i",
     join(frameDir, "frame_%03d.png"),
     "-c:v",
     "libx264",
+    "-r",
+    "60",
     "-preset",
     "ultrafast",
     "-threads",
@@ -568,6 +799,7 @@ async function generateVideo(prompt, flow = "leaderboard") {
     compositionUrl: `/assets/generated/${id}/index.html`,
     type,
     renderer: composition?.html ? "fallback-after-hyperframes" : "fallback",
+    warnings,
   };
 }
 
@@ -588,26 +820,52 @@ async function serveStatic(request, response) {
 }
 
 const server = createServer(async (request, response) => {
+  const traceId = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
   try {
     if (request.method === "POST" && request.url === "/api/generate") {
       const body = await readBody(request);
-      const payload = JSON.parse(body || "{}");
+      let payload;
+      try {
+        payload = JSON.parse(body || "{}");
+      } catch (error) {
+        sendJson(
+          response,
+          400,
+          errorPayload(
+            new GenerationError("request", "Request body must be valid JSON.", {
+              code: "BAD_JSON",
+              detail: error.message,
+            }),
+            traceId,
+          ),
+        );
+        return;
+      }
       const prompt = String(payload.prompt || "").trim();
       const flow = String(payload.flow || "leaderboard");
       if (!prompt) {
-        sendJson(response, 400, { error: "Prompt is required" });
+        sendJson(
+          response,
+          400,
+          errorPayload(
+            new GenerationError("request", "Prompt is required.", {
+              code: "PROMPT_REQUIRED",
+            }),
+            traceId,
+          ),
+        );
         return;
       }
 
       const result = await generateVideo(prompt, flow);
-      sendJson(response, 200, result);
+      sendJson(response, 200, { ...result, traceId });
       return;
     }
 
     await serveStatic(request, response);
   } catch (error) {
-    console.error(error);
-    sendJson(response, 500, { error: "Video generation failed. Please try again with a simpler prompt." });
+    console.error(`[${traceId}]`, error);
+    sendJson(response, 500, errorPayload(error, traceId));
   }
 });
 

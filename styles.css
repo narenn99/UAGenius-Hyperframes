@@ -378,6 +378,75 @@ button.template-card {
   color: #8a94a6;
 }
 
+.error-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  background: #fff7f7;
+  color: #7f1d1d;
+}
+
+.error-kicker {
+  width: fit-content;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.error-panel h2 {
+  margin: 0;
+  color: #7f1d1d;
+  font-size: 20px;
+  font-weight: 820;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+.error-panel p {
+  margin: 0;
+  color: #991b1b;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.error-details {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.error-details div {
+  display: grid;
+  gap: 4px;
+}
+
+.error-details dt {
+  color: #7f1d1d;
+  font-size: 13px;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+
+.error-details dd {
+  margin: 0;
+  color: #4b1818;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .upload-block {
   display: flex;
   align-items: center;
