@@ -19,6 +19,7 @@ const openAiMaxOutputTokens = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 16_
 const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 8 * 60_000);
 const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 2 * 60_000);
 const generationJobTimeoutMs = Number(process.env.GENERATION_JOB_TIMEOUT_MS || 10 * 60_000);
+const enableHyperframesRender = /^(1|true|yes)$/i.test(process.env.ENABLE_HYPERFRAMES_RENDER || "");
 const jobs = new Map();
 
 const mimeTypes = {
@@ -877,7 +878,9 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
   await writeFile(indexPath, html);
   await writeFile(join(jobDir, "render-spec.json"), JSON.stringify(renderSpec, null, 2));
 
-  if (composition?.html) {
+  let renderer = composition?.html ? "render-spec" : "fallback";
+
+  if (composition?.html && enableHyperframesRender) {
     try {
       const renderTimeoutMs = stageTimeout(deadlineMs, hyperframesTimeoutMs);
       assertStageBudget("hyperframes", renderTimeoutMs);
@@ -894,6 +897,7 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
         warnings,
       };
     } catch (error) {
+      renderer = "fallback-after-hyperframes";
       warnings.push({
         stage: error.stage || "hyperframes",
         code: error.code || "HYPERFRAMES_FAILED",
@@ -902,6 +906,13 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
       });
       console.warn(`[hyperframes] Rendering backup MP4 with frame renderer: ${error.message}`);
     }
+  } else if (composition?.html) {
+    warnings.push({
+      stage: "hyperframes",
+      code: "HYPERFRAMES_DISABLED",
+      message: "HyperFrames browser rendering is disabled for this deployment.",
+      detail: "Using the generated renderSpec with the stable server-side MP4 renderer.",
+    });
   }
 
   const frameRate = 30;
@@ -949,7 +960,7 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
     videoUrl: `/assets/generated/${id}/video.mp4`,
     compositionUrl: `/assets/generated/${id}/index.html`,
     type,
-    renderer: composition?.html ? "fallback-after-hyperframes" : "fallback",
+    renderer,
     warnings,
   };
 }
