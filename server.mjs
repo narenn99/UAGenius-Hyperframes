@@ -14,9 +14,11 @@ const generatedDir = join(rootDir, "assets", "generated");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1";
-const openAiTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 25_000);
+const openAiTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 9 * 60_000);
 const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 60_000);
 const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 60_000);
+const generationJobTimeoutMs = Number(process.env.GENERATION_JOB_TIMEOUT_MS || 10 * 60_000);
+const jobs = new Map();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -48,7 +50,7 @@ function errorPayload(error, traceId) {
   const stage = error.stage || "unknown";
   const suggestions = {
     openai:
-      "Check OPENAI_API_KEY, OPENAI_MODEL, quota, and model access. The renderer can still use fallback if OpenAI is slow or unavailable.",
+      "Check OPENAI_API_KEY, OPENAI_MODEL, quota, model access, and OpenAI latency. This product waits for OpenAI instead of substituting fallback creative.",
     hyperframes:
       "Check Chromium/HyperFrames availability and whether the generated HTML violates the composition contract.",
     ffmpeg:
@@ -715,10 +717,15 @@ async function generateVideo(prompt, flow = "leaderboard") {
   const fallbackSpec = fallbackRenderSpec(prompt);
   let composition = null;
   const warnings = [];
+  const hasOpenAiKey = Boolean(process.env.OPENAI_API_KEY);
 
   try {
     composition = await generateCompositionWithOpenAI(prompt, flow);
   } catch (error) {
+    if (hasOpenAiKey) {
+      throw error;
+    }
+
     warnings.push({
       stage: error.stage || "openai",
       code: error.code || "OPENAI_FAILED",
@@ -747,6 +754,10 @@ async function generateVideo(prompt, flow = "leaderboard") {
         warnings,
       };
     } catch (error) {
+      if (hasOpenAiKey) {
+        throw error;
+      }
+
       warnings.push({
         stage: error.stage || "hyperframes",
         code: error.code || "HYPERFRAMES_FAILED",
@@ -803,6 +814,67 @@ async function generateVideo(prompt, flow = "leaderboard") {
   };
 }
 
+function publicJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    stage: job.stage,
+    message: job.message,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    result: job.result || null,
+    error: job.error || null,
+  };
+}
+
+function startGenerationJob({ prompt, flow, traceId }) {
+  const id = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
+  const now = new Date().toISOString();
+  const job = {
+    id,
+    traceId,
+    prompt,
+    flow,
+    status: "queued",
+    stage: "queued",
+    message: "Generation queued.",
+    createdAt: now,
+    updatedAt: now,
+    result: null,
+    error: null,
+  };
+  jobs.set(id, job);
+
+  queueMicrotask(async () => {
+    job.status = "running";
+    job.stage = "openai";
+    job.message = "Generating composition with OpenAI.";
+    job.updatedAt = new Date().toISOString();
+
+    try {
+      const result = await withTimeout(
+        generateVideo(prompt, flow),
+        generationJobTimeoutMs,
+        "generation",
+        "Video generation exceeded the 10-minute safety limit.",
+      );
+      job.status = "succeeded";
+      job.stage = "complete";
+      job.message = "Video generated.";
+      job.result = { ...result, traceId };
+      job.updatedAt = new Date().toISOString();
+    } catch (error) {
+      job.status = "failed";
+      job.stage = error.stage || "unknown";
+      job.message = error.message || "Video generation failed.";
+      job.error = errorPayload(error, traceId).error;
+      job.updatedAt = new Date().toISOString();
+    }
+  });
+
+  return job;
+}
+
 async function serveStatic(request, response) {
   const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
   const cleanPath = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
@@ -822,6 +894,28 @@ async function serveStatic(request, response) {
 const server = createServer(async (request, response) => {
   const traceId = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
   try {
+    const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
+    if (request.method === "GET" && requestUrl.pathname.startsWith("/api/jobs/")) {
+      const jobId = decodeURIComponent(requestUrl.pathname.slice("/api/jobs/".length));
+      const job = jobs.get(jobId);
+      if (!job) {
+        sendJson(
+          response,
+          404,
+          errorPayload(
+            new GenerationError("request", "Generation job was not found.", {
+              code: "JOB_NOT_FOUND",
+            }),
+            traceId,
+          ),
+        );
+        return;
+      }
+
+      sendJson(response, 200, publicJob(job));
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/generate") {
       const body = await readBody(request);
       let payload;
@@ -857,8 +951,15 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      const result = await generateVideo(prompt, flow);
-      sendJson(response, 200, { ...result, traceId });
+      const job = startGenerationJob({ prompt, flow, traceId });
+      sendJson(response, 202, {
+        jobId: job.id,
+        status: job.status,
+        stage: job.stage,
+        message: job.message,
+        statusUrl: `/api/jobs/${job.id}`,
+        traceId,
+      });
       return;
     }
 

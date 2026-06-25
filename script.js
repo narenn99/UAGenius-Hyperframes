@@ -130,6 +130,51 @@ async function parseErrorResponse(response) {
   }
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pollGenerationJob(statusUrl) {
+  const startedAt = Date.now();
+  const clientTimeoutMs = 10 * 60 * 1000 + 30 * 1000;
+
+  while (Date.now() - startedAt < clientTimeoutMs) {
+    await wait(2500);
+    const response = await fetch(statusUrl);
+    if (!response.ok) {
+      const payload = await parseErrorResponse(response);
+      const error = new Error(payload?.error?.message || "Could not read generation status");
+      error.payload = payload;
+      throw error;
+    }
+
+    const job = await response.json();
+    if (job.status === "running" || job.status === "queued") {
+      loadingStatus.textContent = job.message || `Still working: ${job.stage || "generation"}`;
+      continue;
+    }
+
+    if (job.status === "succeeded" && job.result) {
+      return job.result;
+    }
+
+    const error = new Error(job.error?.message || "Video generation failed");
+    error.payload = { error: job.error || { stage: job.stage || "unknown" } };
+    throw error;
+  }
+
+  const error = new Error("Generation exceeded the 10-minute client wait limit.");
+  error.payload = {
+    error: {
+      code: "CLIENT_TIMEOUT",
+      message: error.message,
+      stage: "generation",
+      suggestion: "Check the job status and Railway logs. The server may still be working or may have hit the 10-minute cap.",
+    },
+  };
+  throw error;
+}
+
 async function generateVideo() {
   const prompt = videoPrompt.value.trim();
   if (!prompt) {
@@ -141,11 +186,11 @@ async function generateVideo() {
   hideError();
   loadingScreen.classList.remove("is-hidden");
   loadingStatus.textContent =
-    "We are turning your prompt into a composition, then rendering it into a video.";
+    "Generation started. Waiting for OpenAI to create the composition, then rendering it into a video.";
   window.scrollTo({ top: 0, behavior: "smooth" });
   const slowTimer = setTimeout(() => {
     loadingStatus.textContent =
-      "Still working. If this fails, the next screen will show whether OpenAI, HyperFrames, ffmpeg, or deployment timed out.";
+      "Still working. Some prompts take longer; this job will keep polling and only fail after the 10-minute safety limit or a real subsystem error.";
   }, 25_000);
 
   try {
@@ -167,7 +212,13 @@ async function generateVideo() {
       throw error;
     }
 
-    const result = await response.json();
+    let result = await response.json();
+    if (response.status === 202 && result.statusUrl) {
+      loadingStatus.textContent =
+        result.message || "Generation started. Waiting for OpenAI and the renderer to finish.";
+      result = await pollGenerationJob(result.statusUrl);
+    }
+
     resultVideo.src = result.videoUrl;
     downloadButton.href = result.videoUrl;
     downloadButton.download = `${activeFlow.id}-video.mp4`;
