@@ -137,17 +137,48 @@ function wait(ms) {
 async function pollGenerationJob(statusUrl) {
   const startedAt = Date.now();
   const clientTimeoutMs = 10 * 60 * 1000 + 30 * 1000;
+  let statusReadFailures = 0;
 
   while (Date.now() - startedAt < clientTimeoutMs) {
     await wait(2500);
-    const response = await fetch(statusUrl);
+    let response;
+    try {
+      response = await fetch(statusUrl);
+    } catch {
+      statusReadFailures += 1;
+      if (statusReadFailures <= 12) {
+        loadingStatus.textContent =
+          "Generation is still running. Reconnecting to the status endpoint...";
+        continue;
+      }
+
+      const error = new Error("Could not read generation status");
+      error.payload = {
+        error: {
+          code: "STATUS_UNREACHABLE",
+          message: "Could not read generation status after several retries.",
+          stage: "status",
+          suggestion: "The video may still be generating. Wait a moment, then try again or refresh the page.",
+        },
+      };
+      throw error;
+    }
+
     if (!response.ok) {
       const payload = await parseErrorResponse(response);
+      if (payload?.error?.code === "JOB_NOT_FOUND" && statusReadFailures <= 6) {
+        statusReadFailures += 1;
+        loadingStatus.textContent =
+          "Generation is still running. Waiting for job status to become available...";
+        continue;
+      }
+
       const error = new Error(payload?.error?.message || "Could not read generation status");
       error.payload = payload;
       throw error;
     }
 
+    statusReadFailures = 0;
     const job = await response.json();
     if (job.status === "running" || job.status === "queued") {
       loadingStatus.textContent = job.message || `Still working: ${job.stage || "generation"}`;

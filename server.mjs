@@ -11,6 +11,7 @@ const sharp = require("sharp");
 
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 const generatedDir = join(rootDir, "assets", "generated");
+const jobStateDir = join(generatedDir, "jobs");
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1";
@@ -978,6 +979,24 @@ function publicJob(job) {
   };
 }
 
+async function persistJob(job) {
+  try {
+    await mkdir(jobStateDir, { recursive: true });
+    await writeFile(join(jobStateDir, `${job.id}.json`), JSON.stringify(publicJob(job), null, 2));
+  } catch (error) {
+    console.warn(`[${job.traceId}] could not persist job=${job.id}: ${error.message}`);
+  }
+}
+
+async function readPersistedJob(jobId) {
+  try {
+    const raw = await readFile(join(jobStateDir, `${jobId}.json`), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 function startGenerationJob({ prompt, flow, traceId }) {
   const id = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
   const now = new Date().toISOString();
@@ -996,6 +1015,7 @@ function startGenerationJob({ prompt, flow, traceId }) {
     error: null,
   };
   jobs.set(id, job);
+  void persistJob(job);
 
   queueMicrotask(async () => {
     const updateStage = (stage, message) => {
@@ -1003,6 +1023,7 @@ function startGenerationJob({ prompt, flow, traceId }) {
       job.stage = stage;
       job.message = message;
       job.updatedAt = new Date().toISOString();
+      void persistJob(job);
       console.log(`[${traceId}] job=${id} stage=${stage} ${message}`);
     };
 
@@ -1020,12 +1041,14 @@ function startGenerationJob({ prompt, flow, traceId }) {
       job.message = "Video generated.";
       job.result = { ...result, traceId };
       job.updatedAt = new Date().toISOString();
+      await persistJob(job);
     } catch (error) {
       job.status = "failed";
       job.stage = error.stage || "unknown";
       job.message = error.message || "Video generation failed.";
       job.error = errorPayload(error, traceId).error;
       job.updatedAt = new Date().toISOString();
+      await persistJob(job);
       console.error(
         `[${traceId}] job=${id} failed stage=${job.stage} code=${job.error.code} message=${job.message} detail=${String(
           job.error.detail || "",
@@ -1059,7 +1082,7 @@ const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host}`);
     if (request.method === "GET" && requestUrl.pathname.startsWith("/api/jobs/")) {
       const jobId = decodeURIComponent(requestUrl.pathname.slice("/api/jobs/".length));
-      const job = jobs.get(jobId);
+      const job = jobs.get(jobId) || (await readPersistedJob(jobId));
       if (!job) {
         sendJson(
           response,
