@@ -115,8 +115,39 @@ function trimProcessOutput(stdout, stderr, limit = 4_000) {
   return output ? output.slice(-limit) : "";
 }
 
-function sanitizeCompositionHtml(html) {
-  return String(html || "").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+function safeTimelineScript(durationSeconds) {
+  const duration = Number.isFinite(Number(durationSeconds)) ? Number(durationSeconds) : 4;
+  return `<script>
+(() => {
+  const duration = ${JSON.stringify(clamp(duration, 2, 8))};
+  let current = 0;
+  let scale = 1;
+  const timeline = {
+    duration: () => duration,
+    time: () => current,
+    seek: (value) => {
+      current = Math.max(0, Math.min(duration, Number(value) || 0));
+      return timeline;
+    },
+    totalTime: (value) => (value === undefined ? current : timeline.seek(value)),
+    play: () => timeline,
+    pause: () => timeline,
+    timeScale: (value) => {
+      if (value !== undefined) scale = Number(value) || 1;
+      return scale;
+    }
+  };
+  window.__timelines = window.__timelines || {};
+  window.__timelines.main = timeline;
+})();
+</script>`;
+}
+
+function sanitizeCompositionHtml(html, durationSeconds) {
+  const withoutScripts = String(html || "").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  const script = safeTimelineScript(durationSeconds);
+  if (/<\/body>/i.test(withoutScripts)) return withoutScripts.replace(/<\/body>/i, `${script}</body>`);
+  return `${withoutScripts}${script}`;
 }
 
 function readBody(request) {
@@ -839,7 +870,7 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
   const renderSpec = composition?.renderSpec || fallbackSpec;
   const type = renderSpec.kind || "custom";
   const html = composition?.html
-    ? sanitizeCompositionHtml(composition.html)
+    ? sanitizeCompositionHtml(composition.html, renderSpec.durationSeconds)
     : compositionHtml({ prompt, data: renderSpecToLegacyData(renderSpec), type });
   const indexPath = join(jobDir, "index.html");
   const outputPath = join(jobDir, "video.mp4");
