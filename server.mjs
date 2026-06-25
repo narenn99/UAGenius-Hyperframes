@@ -15,8 +15,8 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1";
 const openAiTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 9 * 60_000);
-const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 60_000);
-const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 60_000);
+const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 8 * 60_000);
+const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 2 * 60_000);
 const generationJobTimeoutMs = Number(process.env.GENERATION_JOB_TIMEOUT_MS || 10 * 60_000);
 const jobs = new Map();
 
@@ -52,11 +52,13 @@ function errorPayload(error, traceId) {
     openai:
       "Check OPENAI_API_KEY, OPENAI_MODEL, quota, model access, and OpenAI latency. This product waits for OpenAI instead of substituting fallback creative.",
     hyperframes:
-      "Check Chromium/HyperFrames availability and whether the generated HTML violates the composition contract.",
+      "Check Chromium/HyperFrames availability, render duration, and whether the generated HTML violates the composition contract.",
     ffmpeg:
       "Check ffmpeg availability, disk space, and whether frame generation completed.",
     fallback:
       "Check prompt parsing and SVG frame rendering. Try a shorter prompt or structured ranking data.",
+    generation:
+      "The full job hit the 10-minute safety limit. Check the last reported stage and Railway logs for the trace ID.",
     request: "Check the prompt payload and try again.",
     unknown: "Check Railway logs for the trace ID and failing stage.",
   };
@@ -87,6 +89,29 @@ function withTimeout(promise, timeoutMs, stage, message) {
   });
 
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function stageTimeout(deadlineMs, requestedTimeoutMs, reserveMs = 5_000) {
+  if (!deadlineMs) return requestedTimeoutMs;
+  const remaining = deadlineMs - Date.now() - reserveMs;
+  return Math.max(1_000, Math.min(requestedTimeoutMs, remaining));
+}
+
+function assertStageBudget(stage, timeoutMs) {
+  if (timeoutMs <= 1_000) {
+    throw new GenerationError(stage, `Not enough time left to start ${stage}.`, {
+      code: "GENERATION_BUDGET_EXHAUSTED",
+      detail: `${stage} had less than 1s remaining before the 10-minute job limit.`,
+    });
+  }
+}
+
+function trimProcessOutput(stdout, stderr, limit = 4_000) {
+  const sections = [];
+  if (stdout.trim()) sections.push(`stdout:\n${stdout.trim()}`);
+  if (stderr.trim()) sections.push(`stderr:\n${stderr.trim()}`);
+  const output = sections.join("\n\n");
+  return output ? output.slice(-limit) : "";
 }
 
 function readBody(request) {
@@ -386,14 +411,16 @@ Return ONLY valid JSON with this shape:
 HTML requirements:
 - One complete index.html document.
 - 1080x1920 portrait composition.
-- Root visual element must include data-composition-id="main", data-width="1080", data-height="1920", data-start="0", data-duration="4", data-track-index="0".
+- Root visual element must include data-composition-id="main", data-width="1080", data-height="1920", data-start="0", data-duration matching renderSpec.durationSeconds, and data-track-index="0".
 - Inline CSS and inline JavaScript only. No external assets, no CDN, no remote images.
 - Use deterministic CSS/JS only. No Date.now(), Math.random(), network requests, or infinite loops.
 - If using JavaScript animation, make it simple and deterministic. Prefer CSS transforms/opacity.
 - The HTML should visually reflect the user's prompt.
+- Do not use repeat: -1, setInterval, setTimeout, requestAnimationFrame, async scripts, or Promise-based timeline construction.
 
 RenderSpec requirements:
 - Use the user's JSON/data if present.
+- Set durationSeconds from the requested duration when present, between 2 and 8 seconds.
 - For tournament/bracket prompts, put teams in matches/final.
 - For leaderboard prompts, put rows in items.
 - For stat-card prompts, put comparison rows/items in items with values when possible.
@@ -641,23 +668,39 @@ function renderSpecSvg(spec, frame) {
   return spec.kind === "bracket" ? bracketSvg(legacyData, frame) : leaderboardSvg(legacyData, frame);
 }
 
-async function runFfmpeg(args) {
+async function runFfmpeg(args, timeoutMs = ffmpegTimeoutMs) {
   await new Promise((resolve, reject) => {
     const child = spawn("ffmpeg", args, { cwd: rootDir, stdio: ["ignore", "ignore", "pipe"] });
+    let settled = false;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       child.kill("SIGKILL");
       reject(
         new GenerationError("ffmpeg", "ffmpeg timed out while encoding the video.", {
           code: "FFMPEG_TIMEOUT",
+          detail: `ffmpeg exceeded ${Math.round(timeoutMs / 1000)}s.`,
         }),
       );
-    }, ffmpegTimeoutMs);
+    }, timeoutMs);
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(
+        new GenerationError("ffmpeg", "ffmpeg could not start.", {
+          code: "FFMPEG_UNAVAILABLE",
+          detail: error.message,
+        }),
+      );
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       if (code === 0) resolve();
       else {
@@ -672,36 +715,81 @@ async function runFfmpeg(args) {
   });
 }
 
-async function runHyperframesRender(jobDir, outputPath) {
-  const command = process.env.HYPERFRAMES_BIN || "npx";
-  const args =
-    command.endsWith("bunx") || command === "bunx"
-      ? ["hyperframes", "render", jobDir, "-o", outputPath, "-f", "60", "-q", "draft", "--workers", "1"]
-      : ["hyperframes", "render", jobDir, "-o", outputPath, "-f", "60", "-q", "draft", "--workers", "1"];
+function hyperframesCommand() {
+  if (process.env.HYPERFRAMES_BIN) {
+    const command = process.env.HYPERFRAMES_BIN;
+    const needsPackageArg = command.endsWith("npx") || command === "npx" || command.endsWith("bunx") || command === "bunx";
+    return { command, prefixArgs: needsPackageArg ? ["hyperframes"] : [] };
+  }
+
+  const localBinary = join(rootDir, "node_modules", ".bin", "hyperframes");
+  if (existsSync(localBinary)) return { command: localBinary, prefixArgs: [] };
+  return { command: "npx", prefixArgs: ["hyperframes"] };
+}
+
+async function runHyperframesRender(jobDir, outputPath, timeoutMs = hyperframesTimeoutMs) {
+  const { command, prefixArgs } = hyperframesCommand();
+  const args = [
+    ...prefixArgs,
+    "render",
+    jobDir,
+    "--output",
+    outputPath,
+    "--fps",
+    "60",
+    "--quality",
+    "draft",
+    "--workers",
+    "1",
+  ];
 
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: rootDir, stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(command, args, { cwd: rootDir, stdio: ["ignore", "pipe", "pipe"] });
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       child.kill("SIGKILL");
       reject(
         new GenerationError("hyperframes", "HyperFrames render timed out.", {
           code: "HYPERFRAMES_TIMEOUT",
+          detail:
+            trimProcessOutput(stdout, stderr) ||
+            `Command exceeded ${Math.round(timeoutMs / 1000)}s: ${command} ${args.join(" ")}`,
+          suggestion:
+            "HyperFrames started but did not finish inside the render budget. Check Railway CPU/memory, Chromium availability, and generated composition complexity.",
         }),
       );
-    }, hyperframesTimeoutMs);
-    let stderr = "";
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(
+        new GenerationError("hyperframes", "HyperFrames could not start.", {
+          code: "HYPERFRAMES_UNAVAILABLE",
+          detail: `${error.message}\nCommand: ${command} ${args.join(" ")}`,
+        }),
+      );
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       if (code === 0) resolve();
       else {
         reject(
           new GenerationError("hyperframes", "HyperFrames render failed.", {
             code: "HYPERFRAMES_FAILED",
-            detail: stderr.slice(-1000) || `hyperframes exited with ${code}`,
+            detail: trimProcessOutput(stdout, stderr) || `hyperframes exited with ${code}`,
           }),
         );
       }
@@ -709,7 +797,9 @@ async function runHyperframesRender(jobDir, outputPath) {
   });
 }
 
-async function generateVideo(prompt, flow = "leaderboard") {
+async function generateVideo(prompt, flow = "leaderboard", options = {}) {
+  const onStage = options.onStage || (() => {});
+  const deadlineMs = options.deadlineMs || Date.now() + generationJobTimeoutMs;
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const jobDir = join(generatedDir, id);
   const frameDir = join(jobDir, "frames");
@@ -720,6 +810,7 @@ async function generateVideo(prompt, flow = "leaderboard") {
   const hasOpenAiKey = Boolean(process.env.OPENAI_API_KEY);
 
   try {
+    onStage("openai", "Generating composition with OpenAI. This can take several minutes for detailed prompts.");
     composition = await generateCompositionWithOpenAI(prompt, flow);
   } catch (error) {
     if (hasOpenAiKey) {
@@ -735,6 +826,7 @@ async function generateVideo(prompt, flow = "leaderboard") {
     console.warn(`[openai] ${error.message}`);
   }
 
+  onStage("prepare", "Preparing the generated composition for rendering.");
   const renderSpec = composition?.renderSpec || fallbackSpec;
   const type = renderSpec.kind || "custom";
   const html = composition?.html || compositionHtml({ prompt, data: renderSpecToLegacyData(renderSpec), type });
@@ -745,7 +837,13 @@ async function generateVideo(prompt, flow = "leaderboard") {
 
   if (composition?.html) {
     try {
-      await runHyperframesRender(jobDir, outputPath);
+      const renderTimeoutMs = stageTimeout(deadlineMs, hyperframesTimeoutMs);
+      assertStageBudget("hyperframes", renderTimeoutMs);
+      onStage(
+        "hyperframes",
+        `Rendering the composition with HyperFrames. Render budget: ${Math.round(renderTimeoutMs / 1000)}s.`,
+      );
+      await runHyperframesRender(jobDir, outputPath, renderTimeoutMs);
       return {
         videoUrl: `/assets/generated/${id}/video.mp4`,
         compositionUrl: `/assets/generated/${id}/index.html`,
@@ -772,6 +870,7 @@ async function generateVideo(prompt, flow = "leaderboard") {
   const totalFrames = Math.round((renderSpec.durationSeconds || 4) * frameRate);
   const frameNumbers = Array.from({ length: totalFrames }, (_, frame) => frame);
   const batchSize = Number(process.env.FRAME_RENDER_CONCURRENCY || 6);
+  onStage("fallback", "Rendering local fallback frames.");
   for (let index = 0; index < frameNumbers.length; index += batchSize) {
     const batch = frameNumbers.slice(index, index + batchSize);
     await Promise.all(
@@ -784,6 +883,9 @@ async function generateVideo(prompt, flow = "leaderboard") {
     );
   }
 
+  const encodeTimeoutMs = stageTimeout(deadlineMs, ffmpegTimeoutMs);
+  assertStageBudget("ffmpeg", encodeTimeoutMs);
+  onStage("ffmpeg", `Encoding the rendered frames into MP4. Encode budget: ${Math.round(encodeTimeoutMs / 1000)}s.`);
   await runFfmpeg([
     "-y",
     "-framerate",
@@ -803,7 +905,7 @@ async function generateVideo(prompt, flow = "leaderboard") {
     "-movflags",
     "+faststart",
     outputPath,
-  ]);
+  ], encodeTimeoutMs);
 
   return {
     videoUrl: `/assets/generated/${id}/video.mp4`,
@@ -830,6 +932,7 @@ function publicJob(job) {
 function startGenerationJob({ prompt, flow, traceId }) {
   const id = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
   const now = new Date().toISOString();
+  const deadlineMs = Date.now() + generationJobTimeoutMs;
   const job = {
     id,
     traceId,
@@ -846,14 +949,19 @@ function startGenerationJob({ prompt, flow, traceId }) {
   jobs.set(id, job);
 
   queueMicrotask(async () => {
-    job.status = "running";
-    job.stage = "openai";
-    job.message = "Generating composition with OpenAI.";
-    job.updatedAt = new Date().toISOString();
+    const updateStage = (stage, message) => {
+      job.status = "running";
+      job.stage = stage;
+      job.message = message;
+      job.updatedAt = new Date().toISOString();
+      console.log(`[${traceId}] job=${id} stage=${stage} ${message}`);
+    };
+
+    updateStage("openai", "Generating composition with OpenAI.");
 
     try {
       const result = await withTimeout(
-        generateVideo(prompt, flow),
+        generateVideo(prompt, flow, { onStage: updateStage, deadlineMs }),
         generationJobTimeoutMs,
         "generation",
         "Video generation exceeded the 10-minute safety limit.",
@@ -869,6 +977,11 @@ function startGenerationJob({ prompt, flow, traceId }) {
       job.message = error.message || "Video generation failed.";
       job.error = errorPayload(error, traceId).error;
       job.updatedAt = new Date().toISOString();
+      console.error(
+        `[${traceId}] job=${id} failed stage=${job.stage} code=${job.error.code} message=${job.message} detail=${String(
+          job.error.detail || "",
+        ).slice(0, 2000)}`,
+      );
     }
   });
 
