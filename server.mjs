@@ -15,6 +15,7 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1";
 const openAiTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 9 * 60_000);
+const openAiMaxOutputTokens = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 16_000);
 const hyperframesTimeoutMs = Number(process.env.HYPERFRAMES_TIMEOUT_MS || 8 * 60_000);
 const ffmpegTimeoutMs = Number(process.env.FFMPEG_TIMEOUT_MS || 2 * 60_000);
 const generationJobTimeoutMs = Number(process.env.GENERATION_JOB_TIMEOUT_MS || 10 * 60_000);
@@ -215,15 +216,16 @@ function compositionHtml({ prompt, data, type }) {
 function extractJsonObject(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return {};
+  const normalized = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
 
   try {
-    return JSON.parse(trimmed);
+    return JSON.parse(normalized);
   } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
+    const start = normalized.indexOf("{");
+    const end = normalized.lastIndexOf("}");
     if (start === -1 || end === -1 || end <= start) return {};
     try {
-      return JSON.parse(trimmed.slice(start, end + 1));
+      return JSON.parse(normalized.slice(start, end + 1));
     } catch {
       return {};
     }
@@ -417,6 +419,7 @@ HTML requirements:
 - If using JavaScript animation, make it simple and deterministic. Prefer CSS transforms/opacity.
 - The HTML should visually reflect the user's prompt.
 - Do not use repeat: -1, setInterval, setTimeout, requestAnimationFrame, async scripts, or Promise-based timeline construction.
+- Keep the HTML compact and under 12,000 characters.
 
 RenderSpec requirements:
 - Use the user's JSON/data if present.
@@ -452,7 +455,7 @@ async function generateCompositionWithOpenAI(prompt, flow) {
       body: JSON.stringify({
         model: openAiModel,
         input: buildCompositionPrompt(prompt, flow),
-        max_output_tokens: 6000,
+        max_output_tokens: openAiMaxOutputTokens,
       }),
     });
   } catch (error) {
@@ -478,6 +481,8 @@ async function generateCompositionWithOpenAI(prompt, flow) {
     throw new GenerationError("openai", "OpenAI did not return a valid composition payload.", {
       code: "OPENAI_BAD_PAYLOAD",
       detail: responseText(json).slice(0, 800),
+      suggestion:
+        "OpenAI responded, but the payload was not parseable as the required JSON composition. Check whether output was truncated or wrapped unexpectedly.",
     });
   }
 
