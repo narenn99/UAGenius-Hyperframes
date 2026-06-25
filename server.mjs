@@ -894,17 +894,13 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
         warnings,
       };
     } catch (error) {
-      if (hasOpenAiKey) {
-        throw error;
-      }
-
       warnings.push({
         stage: error.stage || "hyperframes",
         code: error.code || "HYPERFRAMES_FAILED",
         message: error.message,
         detail: error.detail || "",
       });
-      console.warn(`[hyperframes] Falling back to frame renderer: ${error.message}`);
+      console.warn(`[hyperframes] Rendering backup MP4 with frame renderer: ${error.message}`);
     }
   }
 
@@ -912,7 +908,7 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
   const totalFrames = Math.round((renderSpec.durationSeconds || 4) * frameRate);
   const frameNumbers = Array.from({ length: totalFrames }, (_, frame) => frame);
   const batchSize = Number(process.env.FRAME_RENDER_CONCURRENCY || 6);
-  onStage("fallback", "Rendering local fallback frames.");
+  onStage("fallback", "Rendering backup frames from the generated render spec.");
   for (let index = 0; index < frameNumbers.length; index += batchSize) {
     const batch = frameNumbers.slice(index, index + batchSize);
     await Promise.all(
