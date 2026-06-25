@@ -115,6 +115,10 @@ function trimProcessOutput(stdout, stderr, limit = 4_000) {
   return output ? output.slice(-limit) : "";
 }
 
+function sanitizeCompositionHtml(html) {
+  return String(html || "").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+}
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -414,11 +418,11 @@ HTML requirements:
 - One complete index.html document.
 - 1080x1920 portrait composition.
 - Root visual element must include data-composition-id="main", data-width="1080", data-height="1920", data-start="0", data-duration matching renderSpec.durationSeconds, and data-track-index="0".
-- Inline CSS and inline JavaScript only. No external assets, no CDN, no remote images.
-- Use deterministic CSS/JS only. No Date.now(), Math.random(), network requests, or infinite loops.
-- If using JavaScript animation, make it simple and deterministic. Prefer CSS transforms/opacity.
+- Inline CSS only. No script tags, external assets, CDN, or remote images.
+- Use deterministic CSS only. No Date.now(), Math.random(), network requests, or infinite loops.
+- Use CSS keyframes for animation. Prefer transform and opacity.
 - The HTML should visually reflect the user's prompt.
-- Do not use repeat: -1, setInterval, setTimeout, requestAnimationFrame, async scripts, or Promise-based timeline construction.
+- Do not use JavaScript, repeat: -1, setInterval, setTimeout, requestAnimationFrame, async scripts, or Promise-based timeline construction.
 - Keep the HTML compact and under 12,000 characters.
 
 RenderSpec requirements:
@@ -834,7 +838,9 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
   onStage("prepare", "Preparing the generated composition for rendering.");
   const renderSpec = composition?.renderSpec || fallbackSpec;
   const type = renderSpec.kind || "custom";
-  const html = composition?.html || compositionHtml({ prompt, data: renderSpecToLegacyData(renderSpec), type });
+  const html = composition?.html
+    ? sanitizeCompositionHtml(composition.html)
+    : compositionHtml({ prompt, data: renderSpecToLegacyData(renderSpec), type });
   const indexPath = join(jobDir, "index.html");
   const outputPath = join(jobDir, "video.mp4");
   await writeFile(indexPath, html);
