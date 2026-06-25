@@ -849,23 +849,17 @@ async function generateVideo(prompt, flow = "leaderboard", options = {}) {
   const fallbackSpec = fallbackRenderSpec(prompt);
   let composition = null;
   const warnings = [];
-  const hasOpenAiKey = Boolean(process.env.OPENAI_API_KEY);
-
   try {
     onStage("openai", "Generating composition with OpenAI. This can take several minutes for detailed prompts.");
     composition = await generateCompositionWithOpenAI(prompt, flow);
   } catch (error) {
-    if (hasOpenAiKey) {
-      throw error;
-    }
-
     warnings.push({
       stage: error.stage || "openai",
       code: error.code || "OPENAI_FAILED",
       message: error.message,
       detail: error.detail || "",
     });
-    console.warn(`[openai] ${error.message}`);
+    console.warn(`[openai] ${error.message}; continuing with stable render-spec fallback.`);
   }
 
   onStage("prepare", "Preparing the generated composition for rendering.");
